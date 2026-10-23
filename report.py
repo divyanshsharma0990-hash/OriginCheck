@@ -143,7 +143,7 @@ def build_pdf(kind, doc, summ, m):
            kv([("Author Name", m["author"] or "-"), ("Title", m["title"] or "-"), ("Report ID", rid),
                ("Submitted by", m["user"]), ("Submission Date", now.strftime("%Y-%m-%d %H:%M:%S")),
                ("Total Words", f"{total_all:,} (checked: {summ['total_words']:,}; approx. {total_all // 300} pages)"),
-               ("Scan mode", m["mode"]), ("Document type", "Thesis / Research paper (.docx)")]),
+               ("Scan mode", m["mode"]), ("Document type", "Thesis, paper, blog or article")]),
            Paragraph("Result Information", S["h"])]
     if plag:
         g = grade(summ["plag"])
@@ -155,7 +155,7 @@ def build_pdf(kind, doc, summ, m):
     el.append(Spacer(1, 8))
     charts = []
     if plag:
-        pc = {"OpenAlex": "#0E7C86", "Crossref": "#D68910", "CORE": "#8E44AD"}
+        pc = {"OpenAlex": "#0E7C86", "Crossref": "#D68910", "CORE": "#8E44AD", "Web": "#2874A6"}
         charts.append(pie("Sources type", [(k, v, colors.HexColor(pc[k])) for k, v in summ["by_provider"].items()]))
     if ai:
         charts.append(pie("AI likelihood (share of words)", [(k, v, colors.HexColor(c)) for (k, v), c in
@@ -170,9 +170,9 @@ def build_pdf(kind, doc, summ, m):
     for i in range(0, len(cells), 2):
         row = cells[i:i + 2]
         el.append(Table([row], colWidths=[250] * len(row), hAlign="LEFT"))
-    db = [("Language", "English"), ("Quotes / References", "Excluded"), ("Paragraphs under 25 words", "Excluded"),
-          ("Open scholarly databases", "OpenAlex, Crossref" + (", CORE" if m["core"] else "")),
-          ("Student papers / private archives", "Not searched"), ("Internet / web", "Not searched")]
+    db = [("Language", "English"), ("Quotes / References", "Excluded"), ("Very short lines / headings", "Excluded or merged"),
+          ("Scholarly databases", "OpenAlex, Crossref" + (", CORE" if m["core"] else "")),
+          ("Student papers / private archives", "Not searched"), ("Internet / web", "Searched (top results)" if m.get("web") else "Not searched")]
     el += [Paragraph("Exclusion and Database Selection", S["h"]), kv(db, (170, 280))]
 
     # ---- plagiarism summary ----
@@ -217,9 +217,9 @@ def build_pdf(kind, doc, summ, m):
         el.append(t)
 
     # ---- notes + document text ----
-    notes = ("<b>How to read this report.</b> Similarity is measured only against open scholarly databases and is matched mostly "
-             "on titles and abstracts (full text for CORE), so it cannot detect copying from paywalled journals, student archives or "
-             "the wider web. AI detection is a statistical estimate and can wrongly flag formal human writing. Highlighting is at "
+    notes = ("<b>How to read this report.</b> Similarity is measured against open scholarly databases and top web search results, and academic "
+             "records are matched mostly on titles and abstracts (full text for CORE), so it cannot detect copying from paywalled journals or student archives, and web matching covers only "
+             "the top search results. AI detection is a statistical estimate and can wrongly flag formal human writing. Highlighting is at "
              "paragraph level. Use both figures as signals for manual review, not as proof.")
     el += [PageBreak(), Paragraph(notes, S["s"]), Paragraph("Document Text", S["h"])]
     if plag:

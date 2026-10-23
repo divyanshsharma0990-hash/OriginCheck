@@ -1,11 +1,14 @@
 """Checking engine: reads .docx, searches free open sources, runs a local AI detector."""
 import os
 import re
+import html
 import time
 import requests
 from docx import Document
 
-MIN_WORDS, SIM_T, AI_T, DELAY = 25, 0.20, 0.50, 0.6
+SIM_T, AI_T, DELAY = 0.20, 0.50, 0.6
+TARGET, MIN_BLOCK = 60, 15   # short paragraphs are merged into blocks of about 60+ words
+STATS = {"searches": 0, "errors": 0}
 AI_MODEL = os.getenv("AI_MODEL", "Hello-SimpleAI/chatgpt-detector-roberta")
 REF_HEADS = {"references", "bibliography", "works cited"}
 _cache, _det = {}, None
@@ -29,12 +32,37 @@ def containment(para, src):
     return len(a & shingles(src)) / len(a) if a else 0.0
 
 
-def parse_docx(f):
-    doc = Document(f)
-    cp = doc.core_properties
-    paras, ex, in_refs = [], {"Quotes": 0, "References": 0, "Headings": 0, "Short paragraphs": 0}, False
-    for p in doc.paragraphs:
-        t = p.text.strip()
+def _items(doc):
+    """Paragraphs in document order, including text inside tables."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    keep, seen = [], set()
+    for el in doc.element.body.iterchildren():
+        if el.tag.endswith("}p"):
+            yield Paragraph(el, doc)
+        elif el.tag.endswith("}tbl"):
+            for row in Table(el, doc).rows:
+                for cell in row.cells:
+                    if id(cell._tc) in seen:
+                        continue
+                    keep.append(cell._tc)
+                    seen.add(id(cell._tc))
+                    for p in cell.paragraphs:
+                        yield p
+
+
+def _assemble(items, title="", author=""):
+    """items: (text, is_styled_heading). Skips headings/references, merges short paragraphs."""
+    ex = {"Quotes": 0, "References": 0, "Headings": 0, "Short paragraphs": 0}
+    blocks, buf, in_refs = [], [], False
+
+    def flush():
+        if buf:
+            blocks.append(" ".join(buf))
+            buf.clear()
+
+    for t, styled in items:
+        t = t.strip()
         if not t:
             continue
         n = len(words(t))
@@ -42,20 +70,48 @@ def parse_docx(f):
             ex["References"] += n
             continue
         if t.lower().strip(" :.") in REF_HEADS:
+            flush()
             in_refs = True
             continue
-        st = (p.style.name or "").lower() if p.style is not None else ""
-        if st.startswith("heading") or st == "title":
+        if styled or (n <= 8 and not t.endswith((".", "!", "?", ":", ";", '"', "\u201d"))):
             ex["Headings"] += n
+            flush()
             continue
-        if n < MIN_WORDS:
-            ex["Short paragraphs"] += n
-            continue
+        buf.append(t)
+        if sum(len(words(x)) for x in buf) >= TARGET:
+            flush()
+    flush()
+    merged = []
+    for b in blocks:
+        if len(words(b)) < MIN_BLOCK:
+            if merged:
+                merged[-1] += " " + b
+            else:
+                ex["Short paragraphs"] += len(words(b))
+        else:
+            merged.append(b)
+    paras = []
+    for t in merged:
         clean = strip_quotes(t)
-        nc = len(words(clean))
+        n, nc = len(words(t)), len(words(clean))
         ex["Quotes"] += n - nc
         paras.append({"text": t, "clean": clean, "n": n, "nc": nc, "sim": None, "src": None, "ai": None, "sid": None})
-    return {"paras": paras, "excluded": ex, "title": cp.title or "", "author": cp.author or ""}
+    return {"paras": paras, "excluded": ex, "title": title, "author": author}
+
+
+def parse_docx(f):
+    doc = Document(f)
+    cp = doc.core_properties
+
+    def styled(p):
+        st = (p.style.name or "").lower() if p.style is not None else ""
+        return st.startswith("heading") or st == "title"
+
+    return _assemble(((p.text, styled(p)) for p in _items(doc)), cp.title or "", cp.author or "")
+
+
+def parse_text(text):
+    return _assemble(((ln, False) for ln in text.splitlines()))
 
 
 # ---- free sources ----
@@ -63,11 +119,14 @@ def _get(url, params=None, headers=None):
     key = (url, tuple(sorted((params or {}).items())))
     if key not in _cache:
         time.sleep(DELAY)
+        STATS["searches"] += 1
         try:
             r = requests.get(url, params=params, headers=headers, timeout=25)
             _cache[key] = r.json() if r.status_code == 200 else None
         except Exception:
             _cache[key] = None
+        if _cache[key] is None:
+            STATS["errors"] += 1
     return _cache[key]
 
 
@@ -113,13 +172,63 @@ def s_core(q):
     return out
 
 
+def _ddgs():
+    try:
+        from ddgs import DDGS
+        return DDGS
+    except Exception:
+        try:
+            from duckduckgo_search import DDGS
+            return DDGS
+        except Exception:
+            return None
+
+
+def web_available():
+    return _ddgs() is not None
+
+
+def _page_text(url):
+    try:
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
+        if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
+            return ""
+        raw = r.raw.read(1_500_000, decode_content=True).decode(r.encoding or "utf-8", "ignore")
+    except Exception:
+        return ""
+    raw = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", raw)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw)))
+
+
+def s_web(q):
+    D = _ddgs()
+    if not D:
+        return []
+    if ("web", q) in _cache:
+        return _cache[("web", q)]
+    time.sleep(1.0)
+    STATS["searches"] += 1
+    out = []
+    try:
+        res = D().text(q, max_results=4) or []
+    except Exception:
+        STATS["errors"] += 1
+        res = []
+    for r in res[:3]:
+        url = r.get("href", "")
+        out.append({"title": r.get("title") or url, "url": url, "provider": "Web",
+                    "text": (r.get("title") or "") + " " + (r.get("body") or "") + " " + _page_text(url)})
+    _cache[("web", q)] = out
+    return out
+
+
 def check_para(clean, k):
     sents = sorted([s for s in re.split(r"(?<=[.!?])\s+", clean) if len(s.split()) >= 8],
                    key=lambda s: -len(s.split()))[:k]
     best, src = 0.0, None
     for q in sents:
         q = " ".join(q.split()[:25])
-        for fn in (s_openalex, s_crossref, s_core):
+        for fn in (s_openalex, s_crossref, s_core, s_web):
             for c in fn(q):
                 sc = containment(clean, c["text"])
                 if sc > best:
@@ -138,6 +247,7 @@ def detect_ai(text):
 
 
 def run(doc, do_plag, do_ai, mode, progress):
+    STATS.update(searches=0, errors=0)
     P, n = doc["paras"], max(1, len(doc["paras"]))
     k = 3 if mode == "Deep" else 1
     cut = 0.6 if do_plag and do_ai else 0.95
@@ -157,7 +267,7 @@ def summarize(doc, do_plag, do_ai):
     P = doc["paras"]
     tot = max(1, sum(p["n"] for p in P))
     totc = max(1, sum(p["nc"] for p in P))
-    s = {"total_words": tot, "checked_words": tot}
+    s = {"total_words": tot, "checked_words": tot, "searches": STATS["searches"], "search_errors": STATS["errors"]}
     if do_plag:
         srcs, mw = {}, 0.0
         for p in P:

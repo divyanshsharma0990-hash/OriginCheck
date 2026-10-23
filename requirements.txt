@@ -5,3 +5,4 @@ requests
 reportlab
 transformers
 torch
+ddgs
