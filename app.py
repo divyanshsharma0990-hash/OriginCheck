@@ -1,5 +1,6 @@
-"""OriginCheck - plagiarism + AI content checker (Streamlit)."""
+"""OrigynAI - plagiarism + AI content checker (Streamlit)."""
 import os
+import hashlib
 import pandas as pd
 import streamlit as st
 
@@ -7,7 +8,7 @@ import auth
 import engine
 import report
 
-st.set_page_config(page_title="OriginCheck", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OrigynAI ", page_icon="🛡️", layout="wide")
 for k in ("CORE_API_KEY", "CONTACT_EMAIL"):
     try:
         os.environ.setdefault(k, st.secrets[k])
@@ -30,7 +31,7 @@ section[data-testid="stSidebar"] * {color:#fff !important;}
 .note {font-size:13px; color:#5B6770;}
 </style>""", unsafe_allow_html=True)
 
-st.markdown('<div class="banner"><h1>🛡️ OriginCheck</h1><p>Plagiarism and AI content checker for theses and research papers</p></div>',
+st.markdown('<div class="banner"><h1>🛡️ OrigynAI</h1><p>Plagiarism and AI content checker for theses and research papers</p></div>',
             unsafe_allow_html=True)
 
 ss = st.session_state
@@ -76,23 +77,35 @@ with st.sidebar:
                "Use both as signals for review.")
 
 # ---------------- upload + options ----------------
-f = st.file_uploader("Upload Word document (.docx, up to 100 MB)", type=["docx"])
-if not f:
-    st.info("Upload a .docx file to begin.")
+tab_f, tab_t = st.tabs(["Upload file", "Paste text"])
+with tab_f:
+    f = st.file_uploader("Upload a Word document or text file (.docx or .txt, up to 100 MB)", type=["docx", "txt"])
+with tab_t:
+    pasted = st.text_area("Paste your blog post or article", height=220)
+
+if f:
+    src_name, fid = f.name, f"{f.name}-{f.size}"
+elif pasted.strip():
+    src_name, fid = "Pasted text", "p-" + hashlib.md5(pasted.encode()).hexdigest()
+else:
+    st.info("Upload a file or paste your text to begin.")
     st.stop()
 
-fid = f"{f.name}-{f.size}"
 if ss.get("fid") != fid:
-    with st.spinner("Reading document..."):
-        ss.doc, ss.fid, ss.res = engine.parse_docx(f), fid, None
+    with st.spinner("Reading text..."):
+        if f and f.name.lower().endswith(".docx"):
+            ss.doc = engine.parse_docx(f)
+        else:
+            ss.doc = engine.parse_text(f.getvalue().decode("utf-8", "ignore") if f else pasted)
+        ss.fid, ss.res = fid, None
 doc = ss.doc
 if not doc["paras"]:
-    st.error("No checkable paragraphs found (headings, references and very short paragraphs are skipped).")
+    st.error("Not enough checkable text found (headings, references and tiny fragments are skipped). Try a longer text.")
     st.stop()
 
 c1, c2 = st.columns(2)
 author = c1.text_input("Author name", value=doc["author"], key=f"a_{fid}")
-title = c2.text_input("Document title", value=doc["title"] or os.path.splitext(f.name)[0], key=f"t_{fid}")
+title = c2.text_input("Document title", value=doc["title"] or os.path.splitext(src_name)[0], key=f"t_{fid}")
 o1, o2, o3 = st.columns(3)
 do_plag = o1.checkbox("Plagiarism check", True)
 do_ai = o2.checkbox("AI content check", True)
@@ -106,7 +119,7 @@ if st.button("Run check", disabled=not (do_plag or do_ai)):
     try:
         summ = engine.run(doc, do_plag, do_ai, mode, lambda x, msg: bar.progress(min(x, 1.0), text=msg))
         bar.progress(0.97, text="Building reports...")
-        m = {"author": author, "title": title, "user": ss.user, "mode": mode, "core": bool(os.getenv("CORE_API_KEY"))}
+        m = {"author": author, "title": title, "user": ss.user, "mode": mode, "core": bool(os.getenv("CORE_API_KEY")), "web": engine.web_available()}
         pdfs = {}
         if do_plag and do_ai:
             pdfs["combined"] = report.build_pdf("combined", doc, summ, m)
@@ -125,6 +138,8 @@ res = ss.get("res")
 if res:
     s, pdfs = res["summ"], res["pdfs"]
     st.subheader("Results")
+    if s["searches"] and s["search_errors"] / s["searches"] > 0.5:
+        st.warning("Many online searches failed (network or rate limit), so similarity may be understated. Try again later.")
     cols = st.columns(4)
     if "plag" in s:
         cols[0].metric("Similarity", f"{s['plag']}%", f"Grade {report.grade(s['plag'])[0]}", delta_color="off")
