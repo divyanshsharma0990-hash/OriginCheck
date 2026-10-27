@@ -1,4 +1,4 @@
-"""OrigynAI - plagiarism + AI content checker (Streamlit)."""
+"""OriginCheck - plagiarism + AI content checker (Streamlit)."""
 import os
 import hashlib
 import pandas as pd
@@ -8,7 +8,7 @@ import auth
 import engine
 import report
 
-st.set_page_config(page_title="OrigynAI ", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OriginCheck", page_icon="🛡️", layout="wide")
 for k in ("CORE_API_KEY", "CONTACT_EMAIL"):
     try:
         os.environ.setdefault(k, st.secrets[k])
@@ -31,7 +31,7 @@ section[data-testid="stSidebar"] * {color:#fff !important;}
 .note {font-size:13px; color:#5B6770;}
 </style>""", unsafe_allow_html=True)
 
-st.markdown('<div class="banner"><h1>🛡️ OrigynAI</h1><p>Plagiarism and AI content checker for theses and research papers</p></div>',
+st.markdown('<div class="banner"><h1>🛡️ OriginCheck</h1><p>Plagiarism and AI content checker for theses and research papers</p></div>',
             unsafe_allow_html=True)
 
 ss = st.session_state
@@ -75,6 +75,143 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Similarity is measured against open scholarly sources only. AI detection is an estimate. "
                "Use both as signals for review.")
+
+# ---------------- AI humanizer and paraphraser ----------------
+with st.expander("✍️ AI Humanizer & Paraphraser", expanded=True):
+    st.write(
+        "Upload a document or paste text, choose Humanizer or Paraphraser, then select Gemini or Groq. "
+        "The selected provider receives your text only when you click the action button."
+    )
+
+    edit_mode = st.radio(
+        "Choose a tool", ["AI Humanizer", "Paraphraser"], horizontal=True,
+        key="content_edit_mode",
+        help="Humanizer improves tone and readability. Paraphraser changes wording and sentence structure while preserving meaning.",
+    )
+
+    with st.expander("🔑 AI provider and API settings", expanded=True):
+        provider = st.selectbox("AI provider", ["Gemini", "Groq"], key="rewrite_provider")
+        if provider == "Gemini":
+            default_model = "gemini-3.8-flash"
+            try:
+                default_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+            except Exception:
+                default_key = os.getenv("GEMINI_API_KEY", "")
+            api_key = st.text_input(
+                "Gemini API key", value=default_key, type="password", key="rewrite_gemini_key",
+                help="Or configure GEMINI_API_KEY in Streamlit Cloud Secrets."
+            )
+            model = st.text_input("Gemini model", value=default_model, key="rewrite_gemini_model")
+            st.caption("Get a Gemini key from Google AI Studio. Usage is subject to Google's quota and pricing.")
+        else:
+            default_model = "openai/gpt-oss-120b"
+            try:
+                default_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
+            except Exception:
+                default_key = os.getenv("GROQ_API_KEY", "")
+            api_key = st.text_input(
+                "Groq API key", value=default_key, type="password", key="rewrite_groq_key",
+                help="Or configure GROQ_API_KEY in Streamlit Cloud Secrets."
+            )
+            model = st.text_input("Groq model", value=default_model, key="rewrite_groq_model")
+            st.caption("Get a Groq key from the Groq Console. Model availability and usage limits can change.")
+        st.caption("API keys are used for the request. Prefer Streamlit Secrets on a deployed app; never commit keys to source control.")
+
+    uploaded_rewrite_file = st.file_uploader(
+        "Upload content (.txt, .md, .docx, or text-based .pdf)",
+        type=["txt", "md", "docx", "pdf"],
+        key="rewrite_file_upload",
+        help="For scanned/image-only PDFs, run OCR first. Maximum recommended input: 30,000 characters.",
+    )
+    if uploaded_rewrite_file is not None:
+        try:
+            file_bytes = uploaded_rewrite_file.getvalue()
+            suffix = uploaded_rewrite_file.name.lower().rsplit(".", 1)[-1]
+            if suffix in ("txt", "md"):
+                try:
+                    file_text = file_bytes.decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    file_text = file_bytes.decode("utf-8", errors="replace")
+            elif suffix == "docx":
+                from docx import Document
+                from io import BytesIO
+                doc = Document(BytesIO(file_bytes))
+                chunks = [para.text for para in doc.paragraphs if para.text.strip()]
+                for table in doc.tables:
+                    for row in table.rows:
+                        chunks.append(" | ".join(cell.text.strip() for cell in row.cells))
+                file_text = "\n\n".join(chunks)
+            else:
+                from pypdf import PdfReader
+                from io import BytesIO
+                pdf = PdfReader(BytesIO(file_bytes))
+                file_text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+            if not file_text.strip():
+                st.warning("No selectable text was found in that file. For a scanned PDF, use OCR or paste the text instead.")
+            else:
+                st.success(f"Loaded {uploaded_rewrite_file.name} ({len(file_text):,} characters). The uploaded file takes priority over pasted text.")
+        except Exception as exc:
+            file_text = ""
+            st.error(f"Could not read this file: {exc}")
+    else:
+        file_text = ""
+
+    human_input = st.text_area(
+        "Or paste content", height=200,
+        placeholder="Paste your blog post, article, or draft here...",
+        key="humanizer_input",
+    )
+    source_text = file_text.strip() if file_text.strip() else human_input.strip()
+    h1, h2 = st.columns(2)
+    human_tone = h1.selectbox(
+        "Writing style",
+        ["Natural and conversational", "Professional and polished", "Simple and easy to understand",
+         "Academic and formal", "Friendly and engaging", "Concise and direct"],
+        key="humanizer_tone",
+    )
+    keep_headings = h2.checkbox("Preserve existing headings", value=True, key="humanizer_headings")
+    keep_facts = st.checkbox(
+        "Preserve facts, figures, citations, and technical meaning", value=True, key="humanizer_facts"
+    )
+    action_label = "✨ Humanize content" if edit_mode == "AI Humanizer" else "🔁 Paraphrase content"
+    action_key = "run_humanizer" if edit_mode == "AI Humanizer" else "run_paraphraser"
+    if st.button(action_label, type="primary", key=action_key):
+        if not source_text:
+            st.warning("Upload a supported file or paste some content first.")
+        else:
+            try:
+                import humanizer
+                with st.spinner(f"Processing with {provider}..."):
+                    rewritten = humanizer.humanize_text(
+                        source_text, tone=human_tone, preserve_headings=keep_headings,
+                        preserve_facts=keep_facts,
+                        task="paraphrase" if edit_mode == "Paraphraser" else "humanize",
+                        provider=provider, api_key=api_key.strip() if api_key else None,
+                        model=model.strip() if model else None,
+                    )
+                st.session_state["humanizer_result"] = rewritten
+                st.session_state["humanizer_result_mode"] = edit_mode
+                st.success("Paraphrase complete. Review facts and citations before use." if edit_mode == "Paraphraser" else "Rewrite complete. Review facts and citations before publishing.")
+            except Exception as exc:
+                st.error(str(exc))
+
+    if st.session_state.get("humanizer_result"):
+        result_heading = "Paraphrased content" if st.session_state.get("humanizer_result_mode") == "Paraphraser" else "Humanized content"
+        st.markdown(f"#### {result_heading}")
+        st.text_area(
+            "Review and edit the result", value=st.session_state["humanizer_result"],
+            height=300, key="humanizer_result_editor",
+        )
+        result_text = st.session_state.get("humanizer_result_editor", st.session_state["humanizer_result"])
+        result_filename = "paraphrased_content.txt" if st.session_state.get("humanizer_result_mode") == "Paraphraser" else "humanized_content.txt"
+        st.download_button(
+            "Download result (.txt)", data=result_text.encode("utf-8"),
+            file_name=result_filename, mime="text/plain", key="download_humanized",
+        )
+    st.caption(
+        "These tools improve or rephrase writing; they do not guarantee a particular AI-detector score or make copied material original. "
+        "Attribute sources, keep quotations marked, and review facts before publishing."
+    )
 
 # ---------------- upload + options ----------------
 tab_f, tab_t = st.tabs(["Upload file", "Paste text"])
