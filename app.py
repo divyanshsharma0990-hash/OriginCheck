@@ -94,7 +94,7 @@ with tab_hum:
     with st.expander("🔑 AI provider and API settings", expanded=False):
         provider = st.selectbox("AI provider", ["Gemini", "Groq"], key="rewrite_provider")
         if provider == "Gemini":
-            default_model = "gemini-2.5-flash"
+            default_model = "gemini-3.8-flash"
             api_key = st.text_input(
                 "Gemini API key", value="", type="password", key="rewrite_gemini_key",
                 placeholder="Leave empty to use the app's key (Admin accounts only)",
@@ -103,7 +103,7 @@ with tab_hum:
             model = st.text_input("Gemini model", value=default_model, key="rewrite_gemini_model")
             st.caption("Get a Gemini key from Google AI Studio. Usage is subject to Google's quota and pricing.")
         else:
-            default_model = "llama-3.3-70b-versatile"
+            default_model = "openai/gpt-oss-120b"
             api_key = st.text_input(
                 "Groq API key", value="", type="password", key="rewrite_groq_key",
                 placeholder="Leave empty to use the app's key (Admin accounts only)",
