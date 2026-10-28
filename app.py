@@ -31,7 +31,7 @@ section[data-testid="stSidebar"] * {color:#fff !important;}
 .note {font-size:13px; color:#5B6770;}
 </style>""", unsafe_allow_html=True)
 
-st.markdown('<div class="banner"><h1>🛡️ OriginCheck</h1><p>Plagiarism and AI content checker for theses and research papers</p></div>',
+st.markdown('<div class="banner"><h1>🛡️ OriginCheck</h1><p>Plagiarism and AI content checker for theses, research papers, blogs and articles</p></div>',
             unsafe_allow_html=True)
 
 ss = st.session_state
@@ -73,11 +73,13 @@ with st.sidebar:
         ss.clear()
         st.rerun()
     st.markdown("---")
-    st.caption("Similarity is measured against open scholarly sources only. AI detection is an estimate. "
+    st.caption("Similarity is measured against open scholarly sources and top web results. AI detection is an estimate. "
                "Use both as signals for review.")
 
+tab_check, tab_hum = st.tabs(["🔍 Plagiarism & AI check", "✍️ Humanizer & Paraphraser"])
+
 # ---------------- AI humanizer and paraphraser ----------------
-with st.expander("✍️ AI Humanizer & Paraphraser", expanded=True):
+with tab_hum:
     st.write(
         "Upload a document or paste text, choose Humanizer or Paraphraser, then select Gemini or Groq. "
         "The selected provider receives your text only when you click the action button."
@@ -89,29 +91,23 @@ with st.expander("✍️ AI Humanizer & Paraphraser", expanded=True):
         help="Humanizer improves tone and readability. Paraphraser changes wording and sentence structure while preserving meaning.",
     )
 
-    with st.expander("🔑 AI provider and API settings", expanded=True):
+    with st.expander("🔑 AI provider and API settings", expanded=False):
         provider = st.selectbox("AI provider", ["Gemini", "Groq"], key="rewrite_provider")
         if provider == "Gemini":
-            default_model = "gemini-3.8-flash"
-            try:
-                default_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-            except Exception:
-                default_key = os.getenv("GEMINI_API_KEY", "")
+            default_model = "gemini-2.5-flash"
             api_key = st.text_input(
-                "Gemini API key", value=default_key, type="password", key="rewrite_gemini_key",
-                help="Or configure GEMINI_API_KEY in Streamlit Cloud Secrets."
+                "Gemini API key", value="", type="password", key="rewrite_gemini_key",
+                placeholder="Leave empty to use the app's key (Admin accounts only)",
+                help="Your own key from Google AI Studio. Permanent accounts can leave this empty."
             )
             model = st.text_input("Gemini model", value=default_model, key="rewrite_gemini_model")
             st.caption("Get a Gemini key from Google AI Studio. Usage is subject to Google's quota and pricing.")
         else:
-            default_model = "openai/gpt-oss-120b"
-            try:
-                default_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
-            except Exception:
-                default_key = os.getenv("GROQ_API_KEY", "")
+            default_model = "llama-3.3-70b-versatile"
             api_key = st.text_input(
-                "Groq API key", value=default_key, type="password", key="rewrite_groq_key",
-                help="Or configure GROQ_API_KEY in Streamlit Cloud Secrets."
+                "Groq API key", value="", type="password", key="rewrite_groq_key",
+                placeholder="Leave empty to use the app's key (Admin accounts only)",
+                help="Your own key from the Groq Console. Permanent accounts can leave this empty."
             )
             model = st.text_input("Groq model", value=default_model, key="rewrite_groq_model")
             st.caption("Get a Groq key from the Groq Console. Model availability and usage limits can change.")
@@ -178,6 +174,8 @@ with st.expander("✍️ AI Humanizer & Paraphraser", expanded=True):
     if st.button(action_label, type="primary", key=action_key):
         if not source_text:
             st.warning("Upload a supported file or paste some content first.")
+        elif not (api_key or "").strip() and ss.days_left is not None:
+            st.warning("Please enter your own API key in the settings above to use this tool.")
         else:
             try:
                 import humanizer
@@ -213,97 +211,98 @@ with st.expander("✍️ AI Humanizer & Paraphraser", expanded=True):
         "Attribute sources, keep quotations marked, and review facts before publishing."
     )
 
-# ---------------- upload + options ----------------
-tab_f, tab_t = st.tabs(["Upload file", "Paste text"])
-with tab_f:
-    f = st.file_uploader("Upload a Word document or text file (.docx or .txt, up to 100 MB)", type=["docx", "txt"])
-with tab_t:
-    pasted = st.text_area("Paste your blog post or article", height=220)
+with tab_check:
+    # ---------------- upload + options ----------------
+    tab_f, tab_t = st.tabs(["Upload file", "Paste text"])
+    with tab_f:
+        f = st.file_uploader("Upload a Word document or text file (.docx or .txt, up to 100 MB)", type=["docx", "txt"])
+    with tab_t:
+        pasted = st.text_area("Paste your blog post or article", height=220)
 
-if f:
-    src_name, fid = f.name, f"{f.name}-{f.size}"
-elif pasted.strip():
-    src_name, fid = "Pasted text", "p-" + hashlib.md5(pasted.encode()).hexdigest()
-else:
-    st.info("Upload a file or paste your text to begin.")
-    st.stop()
+    if f:
+        src_name, fid = f.name, f"{f.name}-{f.size}"
+    elif pasted.strip():
+        src_name, fid = "Pasted text", "p-" + hashlib.md5(pasted.encode()).hexdigest()
+    else:
+        st.info("Upload a file or paste your text to begin.")
+        st.stop()
 
-if ss.get("fid") != fid:
-    with st.spinner("Reading text..."):
-        if f and f.name.lower().endswith(".docx"):
-            ss.doc = engine.parse_docx(f)
-        else:
-            ss.doc = engine.parse_text(f.getvalue().decode("utf-8", "ignore") if f else pasted)
-        ss.fid, ss.res = fid, None
-doc = ss.doc
-if not doc["paras"]:
-    st.error("Not enough checkable text found (headings, references and tiny fragments are skipped). Try a longer text.")
-    st.stop()
+    if ss.get("fid") != fid:
+        with st.spinner("Reading text..."):
+            if f and f.name.lower().endswith(".docx"):
+                ss.doc = engine.parse_docx(f)
+            else:
+                ss.doc = engine.parse_text(f.getvalue().decode("utf-8", "ignore") if f else pasted)
+            ss.fid, ss.res = fid, None
+    doc = ss.doc
+    if not doc["paras"]:
+        st.error("Not enough checkable text found (headings, references and tiny fragments are skipped). Try a longer text.")
+        st.stop()
 
-c1, c2 = st.columns(2)
-author = c1.text_input("Author name", value=doc["author"], key=f"a_{fid}")
-title = c2.text_input("Document title", value=doc["title"] or os.path.splitext(src_name)[0], key=f"t_{fid}")
-o1, o2, o3 = st.columns(3)
-do_plag = o1.checkbox("Plagiarism check", True)
-do_ai = o2.checkbox("AI content check", True)
-mode = o3.radio("Scan mode", ["Quick", "Deep"], horizontal=True)
-words_n = sum(p["n"] for p in doc["paras"])
-st.markdown(f'<p class="note">{len(doc["paras"])} paragraphs ({words_n:,} words) will be checked. '
-            f'Quick is faster; Deep searches more sentences per paragraph.</p>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    author = c1.text_input("Author name", value=doc["author"], key=f"a_{fid}")
+    title = c2.text_input("Document title", value=doc["title"] or os.path.splitext(src_name)[0], key=f"t_{fid}")
+    o1, o2, o3 = st.columns(3)
+    do_plag = o1.checkbox("Plagiarism check", True)
+    do_ai = o2.checkbox("AI content check", True)
+    mode = o3.radio("Scan mode", ["Quick", "Deep"], horizontal=True)
+    words_n = sum(p["n"] for p in doc["paras"])
+    st.markdown(f'<p class="note">{len(doc["paras"])} paragraphs ({words_n:,} words) will be checked. '
+                f'Quick is faster; Deep searches more sentences per paragraph.</p>', unsafe_allow_html=True)
 
-if st.button("Run check", disabled=not (do_plag or do_ai)):
-    bar = st.progress(0.0, text="Starting...")
-    try:
-        summ = engine.run(doc, do_plag, do_ai, mode, lambda x, msg: bar.progress(min(x, 1.0), text=msg))
-        bar.progress(0.97, text="Building reports...")
-        m = {"author": author, "title": title, "user": ss.user, "mode": mode, "core": bool(os.getenv("CORE_API_KEY")), "web": engine.web_available()}
-        pdfs = {}
-        if do_plag and do_ai:
-            pdfs["combined"] = report.build_pdf("combined", doc, summ, m)
-        if do_plag:
-            pdfs["plag"] = report.build_pdf("plag", doc, summ, m)
-        if do_ai:
-            pdfs["ai"] = report.build_pdf("ai", doc, summ, m)
-        ss.res = {"summ": summ, "pdfs": pdfs}
-        bar.progress(1.0, text="Finished")
-    except Exception as e:
-        bar.empty()
-        st.error(f"Something went wrong: {e}")
+    if st.button("Run check", disabled=not (do_plag or do_ai)):
+        bar = st.progress(0.0, text="Starting...")
+        try:
+            summ = engine.run(doc, do_plag, do_ai, mode, lambda x, msg: bar.progress(min(x, 1.0), text=msg))
+            bar.progress(0.97, text="Building reports...")
+            m = {"author": author, "title": title, "user": ss.user, "mode": mode, "core": bool(os.getenv("CORE_API_KEY")), "web": engine.web_available()}
+            pdfs = {}
+            if do_plag and do_ai:
+                pdfs["combined"] = report.build_pdf("combined", doc, summ, m)
+            if do_plag:
+                pdfs["plag"] = report.build_pdf("plag", doc, summ, m)
+            if do_ai:
+                pdfs["ai"] = report.build_pdf("ai", doc, summ, m)
+            ss.res = {"summ": summ, "pdfs": pdfs}
+            bar.progress(1.0, text="Finished")
+        except Exception as e:
+            bar.empty()
+            st.error(f"Something went wrong: {e}")
 
-# ---------------- results ----------------
-res = ss.get("res")
-if res:
-    s, pdfs = res["summ"], res["pdfs"]
-    st.subheader("Results")
-    if s["searches"] and s["search_errors"] / s["searches"] > 0.5:
-        st.warning("Many online searches failed (network or rate limit), so similarity may be understated. Try again later.")
-    cols = st.columns(4)
-    if "plag" in s:
-        cols[0].metric("Similarity", f"{s['plag']}%", f"Grade {report.grade(s['plag'])[0]}", delta_color="off")
-        cols[1].metric("Matched sources", len(s["sources"]))
-    if "ai" in s:
-        cols[2].metric("Likely AI-written", f"{s['ai']}%", f"Grade {report.grade(s['ai'])[0]}", delta_color="off")
-        cols[3].metric("Flagged paragraphs", sum(1 for p in doc["paras"] if p["ai"] >= 0.5))
+    # ---------------- results ----------------
+    res = ss.get("res")
+    if res:
+        s, pdfs = res["summ"], res["pdfs"]
+        st.subheader("Results")
+        if s["searches"] and s["search_errors"] / s["searches"] > 0.5:
+            st.warning("Many online searches failed (network or rate limit), so similarity may be understated. Try again later.")
+        cols = st.columns(4)
+        if "plag" in s:
+            cols[0].metric("Similarity", f"{s['plag']}%", f"Grade {report.grade(s['plag'])[0]}", delta_color="off")
+            cols[1].metric("Matched sources", len(s["sources"]))
+        if "ai" in s:
+            cols[2].metric("Likely AI-written", f"{s['ai']}%", f"Grade {report.grade(s['ai'])[0]}", delta_color="off")
+            cols[3].metric("Flagged paragraphs", sum(1 for p in doc["paras"] if p["ai"] >= 0.5))
 
-    st.subheader("Download reports (PDF)")
-    d1, d2, d3 = st.columns(3)
-    d1.download_button("📄 Combined report", pdfs.get("combined", b""), "OriginCheck_Combined_Report.pdf",
-                       "application/pdf", disabled="combined" not in pdfs, use_container_width=True)
-    d2.download_button("🔍 Plagiarism report", pdfs.get("plag", b""), "OriginCheck_Plagiarism_Report.pdf",
-                       "application/pdf", disabled="plag" not in pdfs, use_container_width=True)
-    d3.download_button("🤖 AI content report", pdfs.get("ai", b""), "OriginCheck_AI_Report.pdf",
-                       "application/pdf", disabled="ai" not in pdfs, use_container_width=True)
+        st.subheader("Download reports (PDF)")
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("📄 Combined report", pdfs.get("combined", b""), "OriginCheck_Combined_Report.pdf",
+                           "application/pdf", disabled="combined" not in pdfs, use_container_width=True)
+        d2.download_button("🔍 Plagiarism report", pdfs.get("plag", b""), "OriginCheck_Plagiarism_Report.pdf",
+                           "application/pdf", disabled="plag" not in pdfs, use_container_width=True)
+        d3.download_button("🤖 AI content report", pdfs.get("ai", b""), "OriginCheck_AI_Report.pdf",
+                           "application/pdf", disabled="ai" not in pdfs, use_container_width=True)
 
-    t1, t2 = st.tabs(["Matched sources", "Paragraph scores"])
-    with t1:
-        if "sources" in s and s["sources"]:
-            st.dataframe(pd.DataFrame(s["sources"])[["id", "title", "provider", "pct", "url"]].rename(
-                columns={"id": "#", "pct": "% of document"}), use_container_width=True, hide_index=True)
-        else:
-            st.write("No significant matches found." if "sources" in s else "Plagiarism check was not run.")
-    with t2:
-        st.dataframe(pd.DataFrame([{"Para": i, "Words": p["n"],
-                                    "Similarity %": None if p["sim"] is None else round(p["sim"] * 100),
-                                    "AI %": None if p["ai"] is None else round(p["ai"] * 100),
-                                    "Starts with": p["text"][:90]} for i, p in enumerate(doc["paras"], 1)]),
-                     use_container_width=True, hide_index=True)
+        t1, t2 = st.tabs(["Matched sources", "Paragraph scores"])
+        with t1:
+            if "sources" in s and s["sources"]:
+                st.dataframe(pd.DataFrame(s["sources"])[["id", "title", "provider", "pct", "url"]].rename(
+                    columns={"id": "#", "pct": "% of document"}), use_container_width=True, hide_index=True)
+            else:
+                st.write("No significant matches found." if "sources" in s else "Plagiarism check was not run.")
+        with t2:
+            st.dataframe(pd.DataFrame([{"Para": i, "Words": p["n"],
+                                        "Similarity %": None if p["sim"] is None else round(p["sim"] * 100),
+                                        "AI %": None if p["ai"] is None else round(p["ai"] * 100),
+                                        "Starts with": p["text"][:90]} for i, p in enumerate(doc["paras"], 1)]),
+                         use_container_width=True, hide_index=True)
