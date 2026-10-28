@@ -113,51 +113,57 @@ with tab_hum:
             st.caption("Get a Groq key from the Groq Console. Model availability and usage limits can change.")
         st.caption("API keys are used for the request. Prefer Streamlit Secrets on a deployed app; never commit keys to source control.")
 
-    uploaded_rewrite_file = st.file_uploader(
-        "Upload content (.txt, .md, .docx, or text-based .pdf)",
-        type=["txt", "md", "docx", "pdf"],
-        key="rewrite_file_upload",
-        help="For scanned/image-only PDFs, run OCR first. Maximum recommended input: 30,000 characters.",
-    )
-    if uploaded_rewrite_file is not None:
-        try:
-            file_bytes = uploaded_rewrite_file.getvalue()
-            suffix = uploaded_rewrite_file.name.lower().rsplit(".", 1)[-1]
-            if suffix in ("txt", "md"):
-                try:
-                    file_text = file_bytes.decode("utf-8-sig")
-                except UnicodeDecodeError:
-                    file_text = file_bytes.decode("utf-8", errors="replace")
-            elif suffix == "docx":
-                from docx import Document
-                from io import BytesIO
-                doc = Document(BytesIO(file_bytes))
-                chunks = [para.text for para in doc.paragraphs if para.text.strip()]
-                for table in doc.tables:
-                    for row in table.rows:
-                        chunks.append(" | ".join(cell.text.strip() for cell in row.cells))
-                file_text = "\n\n".join(chunks)
-            else:
-                from pypdf import PdfReader
-                from io import BytesIO
-                pdf = PdfReader(BytesIO(file_bytes))
-                file_text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
-            if not file_text.strip():
-                st.warning("No selectable text was found in that file. For a scanned PDF, use OCR or paste the text instead.")
-            else:
-                st.success(f"Loaded {uploaded_rewrite_file.name} ({len(file_text):,} characters). The uploaded file takes priority over pasted text.")
-        except Exception as exc:
+    src_choice = st.radio("Input source", ["Paste text", "Upload file"], horizontal=True, key="rewrite_src")
+    file_text, human_input, src_stem = "", "", "content"
+    if src_choice == "Upload file":
+        uploaded_rewrite_file = st.file_uploader(
+            "Upload content (.txt, .md, .docx, or text-based .pdf)",
+            type=["txt", "md", "docx", "pdf"],
+            key="rewrite_file_upload",
+            help="For scanned/image-only PDFs, run OCR first. Maximum recommended input: 30,000 characters.",
+        )
+        if uploaded_rewrite_file is not None:
+            try:
+                file_bytes = uploaded_rewrite_file.getvalue()
+                suffix = uploaded_rewrite_file.name.lower().rsplit(".", 1)[-1]
+                if suffix in ("txt", "md"):
+                    try:
+                        file_text = file_bytes.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        file_text = file_bytes.decode("utf-8", errors="replace")
+                elif suffix == "docx":
+                    from docx import Document
+                    from io import BytesIO
+                    doc = Document(BytesIO(file_bytes))
+                    chunks = [para.text for para in doc.paragraphs if para.text.strip()]
+                    for table in doc.tables:
+                        for row in table.rows:
+                            chunks.append(" | ".join(cell.text.strip() for cell in row.cells))
+                    file_text = "\n\n".join(chunks)
+                else:
+                    from pypdf import PdfReader
+                    from io import BytesIO
+                    pdf = PdfReader(BytesIO(file_bytes))
+                    file_text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+                if not file_text.strip():
+                    st.warning("No selectable text was found in that file. For a scanned PDF, use OCR or paste the text instead.")
+                else:
+                    st.success(f"Loaded {uploaded_rewrite_file.name} ({len(file_text):,} characters). Using the uploaded file.")
+            except Exception as exc:
+                file_text = ""
+                st.error(f"Could not read this file: {exc}")
+        else:
             file_text = ""
-            st.error(f"Could not read this file: {exc}")
-    else:
-        file_text = ""
 
-    human_input = st.text_area(
-        "Or paste content", height=200,
-        placeholder="Paste your blog post, article, or draft here...",
-        key="humanizer_input",
-    )
-    source_text = file_text.strip() if file_text.strip() else human_input.strip()
+        if uploaded_rewrite_file is not None:
+            src_stem = os.path.splitext(uploaded_rewrite_file.name)[0]
+    else:
+        human_input = st.text_area(
+            "Paste content", height=200,
+            placeholder="Paste your blog post, article, or draft here...",
+            key="humanizer_input",
+        )
+    source_text = file_text.strip() if src_choice == "Upload file" else human_input.strip()
     h1, h2 = st.columns(2)
     human_tone = h1.selectbox(
         "Writing style",
@@ -188,24 +194,31 @@ with tab_hum:
                         model=model.strip() if model else None,
                     )
                 st.session_state["humanizer_result"] = rewritten
+                st.session_state["humanizer_result_editor"] = rewritten
                 st.session_state["humanizer_result_mode"] = edit_mode
+                st.session_state["humanizer_result_stem"] = src_stem
+                st.session_state["humanizer_result_fp"] = hashlib.md5((edit_mode + "||" + source_text).encode()).hexdigest()
                 st.success("Paraphrase complete. Review facts and citations before use." if edit_mode == "Paraphraser" else "Rewrite complete. Review facts and citations before publishing.")
             except Exception as exc:
                 st.error(str(exc))
 
-    if st.session_state.get("humanizer_result"):
-        result_heading = "Paraphrased content" if st.session_state.get("humanizer_result_mode") == "Paraphraser" else "Humanized content"
-        st.markdown(f"#### {result_heading}")
-        st.text_area(
-            "Review and edit the result", value=st.session_state["humanizer_result"],
-            height=300, key="humanizer_result_editor",
-        )
+    cur_fp = hashlib.md5((edit_mode + "||" + source_text).encode()).hexdigest()
+    if st.session_state.get("humanizer_result") and st.session_state.get("humanizer_result_fp") == cur_fp:
+        import humanizer as _hz
+        mode_done = st.session_state.get("humanizer_result_mode")
+        st.markdown("#### " + ("Paraphrased content" if mode_done == "Paraphraser" else "Humanized content"))
+        st.text_area("Review and edit the result", height=300, key="humanizer_result_editor")
         result_text = st.session_state.get("humanizer_result_editor", st.session_state["humanizer_result"])
-        result_filename = "paraphrased_content.txt" if st.session_state.get("humanizer_result_mode") == "Paraphraser" else "humanized_content.txt"
-        st.download_button(
-            "Download result (.txt)", data=result_text.encode("utf-8"),
-            file_name=result_filename, mime="text/plain", key="download_humanized",
-        )
+        base = st.session_state.get("humanizer_result_stem") or "content"
+        tag = "paraphrased" if mode_done == "Paraphraser" else "humanized"
+        d1, d2 = st.columns(2)
+        d1.download_button(
+            "⬇️ Download as Word (.docx)", data=_hz.to_docx_bytes(result_text), file_name=f"{base}_{tag}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="download_humanized_docx", use_container_width=True)
+        d2.download_button(
+            "⬇️ Download as text (.txt)", data=result_text.encode("utf-8"), file_name=f"{base}_{tag}.txt",
+            mime="text/plain", key="download_humanized_txt", use_container_width=True)
     st.caption(
         "These tools improve or rephrase writing; they do not guarantee a particular AI-detector score or make copied material original. "
         "Attribute sources, keep quotations marked, and review facts before publishing."
