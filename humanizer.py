@@ -8,16 +8,17 @@ import os
 import requests
 import streamlit as st
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 
 def _setting(name, default=None):
     value = os.getenv(name)
-    if value:
-        return value
+    if value and value.strip():
+        return value.strip()
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets.get(name, default)
+        return value.strip() if isinstance(value, str) else value
     except Exception:
         return default
 
@@ -105,7 +106,7 @@ TEXT TO EDIT:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             response = requests.post(
                 url,
-                params={"key": api_key},
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.65, "maxOutputTokens": 8192},
@@ -121,7 +122,9 @@ TEXT TO EDIT:
         except Exception:
             detail = response.text
         if response.status_code in (401, 403):
-            raise RuntimeError(f"The {provider.title()} API key was rejected or lacks permission. Check the key and account access.")
+            raise RuntimeError(f"The {provider.title()} API key was rejected or lacks permission for model '{model}'. Check the key, and try a newer model name in the settings. ({detail[:200]})")
+        if response.status_code == 404:
+            raise RuntimeError(f"Model '{model}' was not found for {provider.title()}. Pick a current model name in the settings. ({detail[:200]})")
         if response.status_code == 429:
             raise RuntimeError(f"The {provider.title()} API rate limit or quota was reached. Check your quota and try again later.")
         raise RuntimeError(f"{provider.title()} API error ({response.status_code}): {detail[:500]}")
