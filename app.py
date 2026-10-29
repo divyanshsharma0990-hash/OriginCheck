@@ -8,6 +8,30 @@ import auth
 import engine
 import report
 
+
+def _to_docx_bytes(text):
+    """Turn result text into a Word file (headings, bullets and paragraphs kept)."""
+    import io
+    import re
+    from docx import Document
+    doc = Document()
+    for line in text.splitlines():
+        t = line.rstrip()
+        if not t.strip():
+            continue
+        m = re.match(r"^(#{1,3})\s+(.*)$", t)
+        if m:
+            doc.add_heading(m.group(2).strip(), level=len(m.group(1)))
+        elif re.match(r"^\s*[-*\u2022]\s+", t):
+            doc.add_paragraph(re.sub(r"^\s*[-*\u2022]\s+", "", t), style="List Bullet")
+        elif re.match(r"^\s*\d+[.)]\s+", t):
+            doc.add_paragraph(re.sub(r"^\s*\d+[.)]\s+", "", t), style="List Number")
+        else:
+            doc.add_paragraph(t.strip())
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
 st.set_page_config(page_title="OriginCheck", page_icon="🛡️", layout="wide")
 for k in ("CORE_API_KEY", "CONTACT_EMAIL"):
     try:
@@ -204,7 +228,6 @@ with tab_hum:
 
     cur_fp = hashlib.md5((edit_mode + "||" + source_text).encode()).hexdigest()
     if st.session_state.get("humanizer_result") and st.session_state.get("humanizer_result_fp") == cur_fp:
-        import humanizer as _hz
         mode_done = st.session_state.get("humanizer_result_mode")
         st.markdown("#### " + ("Paraphrased content" if mode_done == "Paraphraser" else "Humanized content"))
         st.text_area("Review and edit the result", height=300, key="humanizer_result_editor")
@@ -213,7 +236,7 @@ with tab_hum:
         tag = "paraphrased" if mode_done == "Paraphraser" else "humanized"
         d1, d2 = st.columns(2)
         d1.download_button(
-            "⬇️ Download as Word (.docx)", data=_hz.to_docx_bytes(result_text), file_name=f"{base}_{tag}.docx",
+            "⬇️ Download as Word (.docx)", data=_to_docx_bytes(result_text), file_name=f"{base}_{tag}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             key="download_humanized_docx", use_container_width=True)
         d2.download_button(
